@@ -1,0 +1,6 @@
+# vim:filetype=gitconfig:
+
+[uploadpack]
+    allowReachableSHA1InWant = true
+    allowFilter = true
+    packObjectsHook = /assets/wrapper.sh
