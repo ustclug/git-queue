@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bufio"
@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -35,11 +34,6 @@ func handle(conn net.Conn) {
 }
 
 func main() {
-	if _, ok := os.LookupEnv("INVOCATION_ID"); ok {
-		// invoked by systemd
-		log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
-	}
-
 	var listenAddr string
 	pflag.StringVarP(&listenAddr, "listen", "l", ":9419", "Address and port to listen on")
 	pflag.Parse()
