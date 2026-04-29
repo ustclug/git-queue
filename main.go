@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -15,9 +16,10 @@ import (
 const ScriptFilename = "/usr/lib/git-core/git-http-backend"
 
 var (
-	listenAddr  string
-	projectRoot string
-	gitPath     string
+	listenAddr       string
+	projectRoot      string
+	gitPath          string
+	globalConfigPath string
 )
 
 func handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,26 +39,39 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("QUERY_STRING=%s", r.URL.RawQuery),
 		fmt.Sprintf("CONTENT_TYPE=%s", r.Header.Get("Content-Type")),
 		fmt.Sprintf("CONTENT_LENGTH=%d", r.ContentLength),
+		fmt.Sprintf("REMOTE_ADDR=%s", r.RemoteAddr),
 
 		// Git-specific environment variables
 		fmt.Sprintf("GIT_PROJECT_ROOT=%s", projectRoot),
+		fmt.Sprintf("GIT_HTTP_EXPORT_ALL=%s", ""),
+		fmt.Sprintf("GIT_CONFIG_GLOBAL=%s", globalConfigPath),
 		fmt.Sprintf("PATH_INFO=%s", r.URL.Path),
 		fmt.Sprintf("GIT_PROTOCOL=%s", r.Header.Get("Git-Protocol")),
+		fmt.Sprintf("NO_BUFFERING=%s", ""),
 	)
-	cmd.Stdin = r.Body
-	defer r.Body.Close()
-	out := new(bytes.Buffer)
-	cmd.Stdout = out
-	cmd.Stderr = out
+	body, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	os.Stdout.Write(body)
+	os.Stdout.Write([]byte("\n"))
+	cmd.Stdin = bytes.NewReader(body)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		fmt.Println("Error creating stdout pipe:", err)
+		return
+	}
+	defer stdout.Close()
 
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		fmt.Println("Error executing git-http-backend:", err)
 		return
 	}
+	defer cmd.Wait()
 	fmt.Println("Git backend OK")
 
 	// parse HTTP headers from CGI output
+	out := bufio.NewReaderSize(stdout, 1024)
 	for {
 		line, err := out.ReadString('\n')
 		if err != nil {
@@ -75,7 +90,6 @@ func handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
-	io.CopyN(w, io.TeeReader(out, os.Stdout), 100)
 	io.Copy(w, out)
 	fmt.Println("\n")
 }
@@ -84,6 +98,7 @@ func main() {
 	pflag.StringVarP(&gitPath, "git-path", "g", ScriptFilename, "Path to git-http-backend")
 	pflag.StringVarP(&listenAddr, "listen", "l", ":8080", "Address to listen on")
 	pflag.StringVarP(&projectRoot, "root", "r", "/srv/git", "Project root directory")
+	pflag.StringVarP(&globalConfigPath, "config", "c", "/etc/gitconfig", "Path to global git config")
 	pflag.Parse()
 
 	s := &http.Server{
