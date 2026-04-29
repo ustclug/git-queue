@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,7 +12,39 @@ import (
 	"github.com/spf13/pflag"
 )
 
-func handle(conn net.Conn) {
+type Config struct {
+	listenAddr string
+	maxActive  int
+	maxQueued  int
+}
+
+func DefaultConfig() Config {
+	return Config{
+		listenAddr: ":9419",
+		maxActive:  10,
+		maxQueued:  1000,
+	}
+}
+
+func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
+	flagset.StringVarP(&c.listenAddr, "listen", "l", c.listenAddr, "Address and port to listen on")
+	flagset.IntVar(&c.maxActive, "max-active", c.maxActive, "Maximum number of active connections")
+	flagset.IntVar(&c.maxQueued, "max-queued", c.maxQueued, "Maximum number of queued connections")
+}
+
+type Server struct {
+	config Config
+
+	l net.Listener
+}
+
+func NewServer(config Config) *Server {
+	return &Server{
+		config: config,
+	}
+}
+
+func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 
 	attrs := make(map[string]string)
@@ -33,22 +66,32 @@ func handle(conn net.Conn) {
 	io.Copy(io.Discard, conn)
 }
 
-func main() {
-	var listenAddr string
-	pflag.StringVarP(&listenAddr, "listen", "l", ":9419", "Address and port to listen on")
-	pflag.Parse()
-
-	l, err := net.Listen("tcp", listenAddr)
+func (s *Server) Start() error {
+	l, err := net.Listen("tcp", s.config.listenAddr)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	s.l = l
+	go s.acceptLoop()
+	return nil
+}
 
+func (s *Server) Stop() error {
+	err := s.l.Close()
+	s.l = nil
+	return err
+}
+
+func (s *Server) acceptLoop() {
 	for {
-		conn, err := l.Accept()
+		conn, err := s.l.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
 			log.Printf("Accept: %v", err)
 			continue
 		}
-		go handle(conn)
+		go s.handle(conn)
 	}
 }
