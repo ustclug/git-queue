@@ -203,6 +203,7 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 	if _, err := fmt.Fprintf(conn, "%d\n", 0); err != nil {
 		return
 	}
+	<-chClosed
 }
 
 func (s *Server) Start() error {
