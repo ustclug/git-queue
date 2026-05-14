@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 	"github.com/ustclug/git-queue/pkg/server"
 )
@@ -24,11 +27,30 @@ func ServerCmd() *cobra.Command {
 	return c
 }
 
+func ConnectionsCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "connections",
+		Short: "Show active connections",
+		Args:  cobra.NoArgs,
+	}
+	config := server.DefaultConfig()
+	config.InstallAdminFlags(c.Flags())
+	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		infos, err := server.QueryConnections(config)
+		if err != nil {
+			return fmt.Errorf("query connections: %w", err)
+		}
+		return server.PrintConnections(os.Stdout, infos)
+	}
+	return c
+}
+
 func Root() *cobra.Command {
 	c := &cobra.Command{
 		Use:  "git-queue",
 		Args: cobra.NoArgs,
 	}
 	c.AddCommand(ServerCmd())
+	c.AddCommand(ConnectionsCmd())
 	return c
 }

@@ -2,12 +2,18 @@ package server
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -15,41 +21,118 @@ import (
 )
 
 type Config struct {
-	listenAddr string
-	maxActive  int
-	maxQueued  int
+	listenAddr  string
+	adminSocket string
+	maxActive   int
+	maxQueued   int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		listenAddr: ":9419",
-		maxActive:  10,
-		maxQueued:  1000,
+		listenAddr:  "127.0.0.1:9419",
+		adminSocket: "/run/git-queue/git-queue.sock",
+		maxActive:   10,
+		maxQueued:   1000,
 	}
 }
 
 func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
 	flagset.StringVarP(&c.listenAddr, "listen", "l", c.listenAddr, "Address and port to listen on")
+	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin commands")
 	flagset.IntVar(&c.maxActive, "max-active", c.maxActive, "Maximum number of active connections")
 	flagset.IntVar(&c.maxQueued, "max-queued", c.maxQueued, "Maximum number of queued connections")
+}
+
+func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
+	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin commands")
+}
+
+type ConnectionInfo struct {
+	Index     uint64    `json:"index"`
+	Remote    string    `json:"remote"`
+	Path      string    `json:"path"`
+	Connected time.Time `json:"connected"`
 }
 
 type Server struct {
 	config Config
 
-	l net.Listener
-	q *queue.Queue
+	l      net.Listener
+	adminL net.Listener
+	q      *queue.Queue
+
+	nextConnIndex atomic.Uint64
+
+	connsMu sync.Mutex
+	conns   map[uint64]ConnectionInfo
 }
 
 func NewServer(config Config) *Server {
 	return &Server{
 		config: config,
 		q:      queue.New(config.maxActive, config.maxQueued),
+		conns:  make(map[uint64]ConnectionInfo),
 	}
 }
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) registerConnection(connected time.Time) ConnectionInfo {
+	info := ConnectionInfo{
+		Index:     s.nextConnIndex.Add(1),
+		Remote:    "",
+		Path:      "",
+		Connected: connected,
+	}
+	s.connsMu.Lock()
+	s.conns[info.Index] = info
+	s.connsMu.Unlock()
+	return info
+}
+
+func (s *Server) updateConnection(info ConnectionInfo) {
+	s.connsMu.Lock()
+	s.conns[info.Index] = info
+	s.connsMu.Unlock()
+}
+
+func (s *Server) unregisterConnection(index uint64) {
+	s.connsMu.Lock()
+	delete(s.conns, index)
+	s.connsMu.Unlock()
+}
+
+func (s *Server) snapshotConnections() []ConnectionInfo {
+	s.connsMu.Lock()
+	out := make([]ConnectionInfo, 0, len(s.conns))
+	for _, info := range s.conns {
+		out = append(out, info)
+	}
+	s.connsMu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Index < out[j].Index
+	})
+	return out
+}
+
+func formatRemote(attrs map[string]string, fallback string) string {
+	host := attrs["REMOTE_ADDR"]
+	port := attrs["REMOTE_PORT"]
+	if host != "" || port != "" {
+		if port == "" {
+			return host
+		}
+		if host == "" {
+			return ":" + port
+		}
+		return net.JoinHostPort(host, port)
+	}
+	return fallback
+}
+
+func (s *Server) handle(conn net.Conn, connected time.Time) {
 	defer conn.Close()
+
+	info := s.registerConnection(connected)
+	defer s.unregisterConnection(info.Index)
 
 	attrs := make(map[string]string)
 	r := bufio.NewScanner(conn)
@@ -66,6 +149,10 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		attrs[parts[0]] = parts[1]
 	}
+
+	info.Remote = formatRemote(attrs, "<unknown>")
+	info.Path = attrs["PATH_INFO"]
+	s.updateConnection(info)
 
 	h := s.q.Acquire()
 	defer h.Release()
@@ -112,14 +199,30 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
+	adminL, err := net.Listen("unix", s.config.adminSocket)
+	if err != nil {
+		_ = l.Close()
+		return err
+	}
 	s.l = l
+	s.adminL = adminL
 	go s.acceptLoop()
+	go s.adminAcceptLoop()
 	return nil
 }
 
 func (s *Server) Stop() error {
 	err := s.l.Close()
 	s.l = nil
+	if s.adminL != nil {
+		if e := s.adminL.Close(); err == nil {
+			err = e
+		}
+		s.adminL = nil
+	}
+	if e := os.Remove(s.config.adminSocket); err == nil && e != nil && !errors.Is(e, os.ErrNotExist) {
+		err = e
+	}
 	return err
 }
 
@@ -133,6 +236,54 @@ func (s *Server) acceptLoop() {
 			log.Printf("Accept: %v", err)
 			continue
 		}
-		go s.handle(conn)
+		go s.handle(conn, time.Now())
 	}
+}
+
+func (s *Server) adminAcceptLoop() {
+	for {
+		conn, err := s.adminL.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+		if err != nil {
+			log.Printf("Admin accept: %v", err)
+			continue
+		}
+		go s.handleAdmin(conn)
+	}
+}
+
+func (s *Server) handleAdmin(conn net.Conn) {
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(s.snapshotConnections()); err != nil {
+		log.Printf("Admin write: %v", err)
+	}
+}
+
+func QueryConnections(config Config) ([]ConnectionInfo, error) {
+	conn, err := net.Dial("unix", config.adminSocket)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	var infos []ConnectionInfo
+	if err := json.NewDecoder(conn).Decode(&infos); err != nil {
+		return nil, err
+	}
+	return infos, nil
+}
+
+func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "Index\tRemote\tPath\tConnected"); err != nil {
+		return err
+	}
+	for _, info := range infos {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", info.Index, info.Remote, info.Path, info.Connected.Format(time.DateTime)); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
