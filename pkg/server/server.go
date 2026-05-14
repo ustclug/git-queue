@@ -2,12 +2,14 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -38,13 +40,13 @@ func DefaultConfig() Config {
 
 func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
 	flagset.StringVarP(&c.listenAddr, "listen", "l", c.listenAddr, "Address and port to listen on")
-	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin commands")
+	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
 	flagset.IntVar(&c.maxActive, "max-active", c.maxActive, "Maximum number of active connections")
 	flagset.IntVar(&c.maxQueued, "max-queued", c.maxQueued, "Maximum number of queued connections")
 }
 
 func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
-	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin commands")
+	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
 }
 
 type ConnectionInfo struct {
@@ -207,7 +209,7 @@ func (s *Server) Start() error {
 	s.l = l
 	s.adminL = adminL
 	go s.acceptLoop()
-	go s.adminAcceptLoop()
+	go s.adminServeLoop()
 	return nil
 }
 
@@ -240,36 +242,45 @@ func (s *Server) acceptLoop() {
 	}
 }
 
-func (s *Server) adminAcceptLoop() {
-	for {
-		conn, err := s.adminL.Accept()
-		if errors.Is(err, net.ErrClosed) {
+func (s *Server) adminServeLoop() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/connections", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if err != nil {
-			log.Printf("Admin accept: %v", err)
-			continue
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(s.snapshotConnections()); err != nil {
+			log.Printf("Admin write: %v", err)
 		}
-		go s.handleAdmin(conn)
-	}
-}
-
-func (s *Server) handleAdmin(conn net.Conn) {
-	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(s.snapshotConnections()); err != nil {
-		log.Printf("Admin write: %v", err)
+	})
+	if err := http.Serve(s.adminL, mux); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Printf("Admin serve: %v", err)
 	}
 }
 
 func QueryConnections(config Config) ([]ConnectionInfo, error) {
-	conn, err := net.Dial("unix", config.adminSocket)
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", config.adminSocket)
+		},
+	}
+	client := &http.Client{Transport: transport}
+
+	resp, err := client.Get("http://unix/connections")
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer resp.Body.Close()
+	defer transport.CloseIdleConnections()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("admin request failed: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
 
 	var infos []ConnectionInfo
-	if err := json.NewDecoder(conn).Decode(&infos); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&infos); err != nil {
 		return nil, err
 	}
 	return infos, nil
