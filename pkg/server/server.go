@@ -154,6 +154,12 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 		attrs[parts[0]] = parts[1]
 	}
 
+	chClosed := make(chan struct{})
+	go func() {
+		io.Copy(io.Discard, conn)
+		close(chClosed)
+	}()
+
 	info.Remote = formatRemote(attrs, "<unknown>")
 	info.Path = attrs["PATH_INFO"]
 	s.updateConnection(info)
@@ -188,6 +194,8 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 				if _, err := fmt.Fprintf(conn, "%d\n", current); err != nil {
 					return
 				}
+			case <-chClosed:
+				return
 			}
 		}
 	}
@@ -195,7 +203,6 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 	if _, err := fmt.Fprintf(conn, "%d\n", 0); err != nil {
 		return
 	}
-	_, _ = io.Copy(io.Discard, conn)
 }
 
 func (s *Server) Start() error {
@@ -206,6 +213,11 @@ func (s *Server) Start() error {
 	adminL, err := net.Listen("unix", s.config.adminSocket)
 	if err != nil {
 		_ = l.Close()
+		return err
+	}
+	if err := os.Chmod(s.config.adminSocket, 0o660); err != nil {
+		_ = l.Close()
+		_ = adminL.Close()
 		return err
 	}
 	s.l = l

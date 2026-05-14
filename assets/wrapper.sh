@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ -z "$BASH_VERSION" ]; then
-  echo "This is not GNU Bash" >&2
+  echo "Error: This is not GNU Bash" >&2
   exit 1
 fi
 
@@ -19,9 +19,13 @@ echo % >&3
 payload="$(cat)"
 waited=0
 while read -u 3 -r line; do
-  if [ "$line" = "0" ]; then
-    break
-  fi
+  case "$line" in
+  0)
+    break;;
+  -1)
+    echo "Queue is full, exiting." >&2
+    exit 1;;
+  esac
   printf "Waiting in queue... (Position: %s)\r" "$line" >&2
   waited=1
 done
