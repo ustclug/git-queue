@@ -8,8 +8,10 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/ustclug/git-queue/pkg/queue"
 )
 
 type Config struct {
@@ -36,11 +38,13 @@ type Server struct {
 	config Config
 
 	l net.Listener
+	q *queue.Queue
 }
 
 func NewServer(config Config) *Server {
 	return &Server{
 		config: config,
+		q:      queue.New(config.maxActive, config.maxQueued),
 	}
 }
 
@@ -62,8 +66,45 @@ func (s *Server) handle(conn net.Conn) {
 		}
 		attrs[parts[0]] = parts[1]
 	}
-	fmt.Fprintf(conn, "%d\n", 0)
-	io.Copy(io.Discard, conn)
+
+	h := s.q.Acquire()
+	defer h.Release()
+
+	status := <-h.C
+	if status.Full {
+		fmt.Fprintf(conn, "%d\n", -1)
+		return
+	}
+
+	if !status.Ok {
+		current := status.Index + 1
+		if _, err := fmt.Fprintf(conn, "%d\n", current); err != nil {
+			return
+		}
+
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+	queuing:
+		for {
+			select {
+			case next := <-h.C:
+				if next.Ok {
+					break queuing
+				}
+				current = next.Index + 1
+			case <-ticker.C:
+				if _, err := fmt.Fprintf(conn, "%d\n", current); err != nil {
+					return
+				}
+			}
+		}
+	}
+
+	if _, err := fmt.Fprintf(conn, "%d\n", 0); err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, conn)
 }
 
 func (s *Server) Start() error {
