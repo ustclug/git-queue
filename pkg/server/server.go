@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"text/tabwriter"
 	"time"
 
+	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/pflag"
 	"github.com/ustclug/git-queue/pkg/queue"
 )
@@ -287,14 +289,35 @@ func QueryConnections(config Config) ([]ConnectionInfo, error) {
 }
 
 func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "Index\tRemote\tPath\tConnected"); err != nil {
-		return err
-	}
+	table := tablewriter.NewTable(
+		w,
+		tablewriter.WithRendition(tw.Rendition{
+			Borders: tw.BorderNone,
+			Settings: tw.Settings{
+				Lines:      tw.LinesNone,
+				Separators: tw.SeparatorsNone,
+			},
+		}),
+		tablewriter.WithPadding(tw.Padding{
+			Right:     "  ",
+			Overwrite: true,
+		}),
+		tablewriter.WithHeaderAutoFormat(tw.Off),
+		tablewriter.WithAlignment(tw.Alignment{
+			tw.AlignRight,   // Index
+			tw.AlignRight,   // RemoteAddr
+			tw.AlignDefault, // Path
+			tw.AlignDefault, // Connected
+		}),
+	)
+	table.Header("Index", "Remote", "Path", "Connected")
 	for _, info := range infos {
-		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", info.Index, info.Remote, info.Path, info.Connected.Format(time.DateTime)); err != nil {
-			return err
-		}
+		table.Append([]string{
+			strconv.FormatUint(info.Index, 10),
+			info.Remote,
+			info.Path,
+			info.Connected.Format(time.DateTime),
+		})
 	}
-	return tw.Flush()
+	return table.Render()
 }
