@@ -52,11 +52,12 @@ func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
 }
 
 type ConnectionInfo struct {
-	Index     uint64    `json:"index"`
-	Remote    string    `json:"remote"`
-	Path      string    `json:"path"`
-	Connected time.Time `json:"connected"`
-	QueuePos  int       `json:"queue_pos"`
+	Index      uint64    `json:"index"`
+	RemoteAddr string    `json:"remote_addr"`
+	RemotePort string    `json:"remote_port"`
+	Path       string    `json:"path"`
+	Connected  time.Time `json:"connected"`
+	QueuePos   int       `json:"queue_pos"`
 }
 
 type Server struct {
@@ -82,11 +83,12 @@ func NewServer(config Config) *Server {
 
 func (s *Server) registerConnection(connected time.Time) ConnectionInfo {
 	info := ConnectionInfo{
-		Index:     s.nextConnIndex.Add(1),
-		Remote:    "",
-		Path:      "",
-		Connected: connected,
-		QueuePos:  0,
+		Index:      s.nextConnIndex.Add(1),
+		RemoteAddr: "",
+		RemotePort: "",
+		Path:       "",
+		Connected:  connected,
+		QueuePos:   0,
 	}
 	s.connsMu.Lock()
 	s.conns[info.Index] = info
@@ -119,19 +121,33 @@ func (s *Server) snapshotConnections() []ConnectionInfo {
 	return out
 }
 
-func formatRemote(attrs map[string]string, fallback string) string {
+func remoteParts(attrs map[string]string, fallback net.Addr) (string, string) {
 	host := attrs["REMOTE_ADDR"]
 	port := attrs["REMOTE_PORT"]
 	if host != "" || port != "" {
-		if port == "" {
-			return host
-		}
-		if host == "" {
-			return ":" + port
-		}
-		return net.JoinHostPort(host, port)
+		return host, port
 	}
-	return fallback
+	if fallback == nil {
+		return "<unknown>", ""
+	}
+	fallbackHost, fallbackPort, err := net.SplitHostPort(fallback.String())
+	if err == nil {
+		return fallbackHost, fallbackPort
+	}
+	return fallback.String(), ""
+}
+
+func assembleRemote(addr, port string) string {
+	if port == "" {
+		if addr == "" {
+			return "<unknown>"
+		}
+		return addr
+	}
+	if addr == "" {
+		return ":" + port
+	}
+	return net.JoinHostPort(addr, port)
 }
 
 func (s *Server) handle(conn net.Conn, connected time.Time) {
@@ -162,7 +178,7 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 		close(chClosed)
 	}()
 
-	info.Remote = formatRemote(attrs, "<unknown>")
+	info.RemoteAddr, info.RemotePort = remoteParts(attrs, conn.RemoteAddr())
 	info.Path = attrs["PATH_INFO"]
 	s.updateConnection(info)
 
@@ -343,7 +359,7 @@ func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
 		}
 		table.Append([]string{
 			strconv.FormatUint(info.Index, 10),
-			info.Remote,
+			assembleRemote(info.RemoteAddr, info.RemotePort),
 			strings.TrimSuffix(info.Path, "/git-upload-pack"),
 			status,
 			info.Connected.Format(time.DateTime),
