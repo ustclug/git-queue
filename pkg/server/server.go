@@ -122,6 +122,36 @@ func (s *Server) snapshotConnections() []ConnectionInfo {
 	return out
 }
 
+func (s *Server) connectionCounts() (active, queued int) {
+	for _, info := range s.snapshotConnections() {
+		if info.QueuePos > 0 {
+			queued++
+			continue
+		}
+		active++
+	}
+	return active, queued
+}
+
+func escapeInfluxTagValue(value string) string {
+	replacer := strings.NewReplacer(",", `\,`, " ", `\ `, "=", `\=`)
+	return replacer.Replace(value)
+}
+
+func formatTelegrafLine(host string, active, queued int, timestamp time.Time) string {
+	return fmt.Sprintf("git-queue,host=%s active=%di,queued=%di %d\n",
+		escapeInfluxTagValue(host), active, queued, timestamp.UnixNano())
+}
+
+func (s *Server) telegrafMetrics() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "<unknown>"
+	}
+	active, queued := s.connectionCounts()
+	return formatTelegrafLine(host, active, queued, time.Now())
+}
+
 func remoteParts(attrs map[string]string, fallback net.Addr) (string, string) {
 	host := attrs["REMOTE_ADDR"]
 	port := attrs["REMOTE_PORT"]
@@ -287,15 +317,15 @@ func (s *Server) acceptLoop() {
 
 func (s *Server) adminServeLoop() {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/connections", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+	mux.HandleFunc("GET /connections", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(s.snapshotConnections()); err != nil {
 			log.Printf("Admin write: %v", err)
 		}
+	})
+	mux.HandleFunc("GET /telegraf", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, s.telegrafMetrics())
 	})
 	if err := http.Serve(s.adminL, mux); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Printf("Admin serve: %v", err)
