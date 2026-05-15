@@ -13,5 +13,5 @@ func main() {
 		log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 	}
 
-	cmd.Root().Execute()
+	_ = cmd.Root().Execute()
 }

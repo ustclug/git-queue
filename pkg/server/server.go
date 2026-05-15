@@ -175,7 +175,7 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 
 	chClosed := make(chan struct{})
 	go func() {
-		io.Copy(io.Discard, conn)
+		_, _ = io.Copy(io.Discard, conn)
 		close(chClosed)
 	}()
 
@@ -358,13 +358,15 @@ func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
 		if info.QueuePos > 0 {
 			status = fmt.Sprintf("Queued (%d)", info.QueuePos)
 		}
-		table.Append([]string{
+		if err := table.Append([]string{
 			strconv.FormatUint(info.Index, 10),
 			assembleRemote(info.RemoteAddr, info.RemotePort),
 			strings.TrimSuffix(info.Path, "/git-upload-pack"),
 			status,
 			info.Connected.Format(time.DateTime),
-		})
+		}); err != nil {
+			return fmt.Errorf("table.Append: %w", err)
+		}
 	}
 	return table.Render()
 }
