@@ -21,6 +21,7 @@ import (
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/pflag"
+
 	"github.com/ustclug/git-queue/pkg/queue"
 )
 
