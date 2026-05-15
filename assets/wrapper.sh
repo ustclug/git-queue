@@ -7,7 +7,7 @@ fi
 
 QUEUE_SERVER_HOST="${QUEUE_SERVER_HOST:-127.0.0.1}"
 QUEUE_SERVER_PORT="${QUEUE_SERVER_PORT:-9419}"
-exec 3<>"/dev/tcp/$QUEUE_SERVER_HOST/$QUEUE_SERVER_PORT"
+exec 3<>"/dev/tcp/$QUEUE_SERVER_HOST/$QUEUE_SERVER_PORT" 2>/dev/null
 if [ $? -ne 0 ]; then
   # Fail-open
   exec "$@"

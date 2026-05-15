@@ -56,6 +56,7 @@ type ConnectionInfo struct {
 	Remote    string    `json:"remote"`
 	Path      string    `json:"path"`
 	Connected time.Time `json:"connected"`
+	QueuePos  int       `json:"queue_pos"`
 }
 
 type Server struct {
@@ -85,6 +86,7 @@ func (s *Server) registerConnection(connected time.Time) ConnectionInfo {
 		Remote:    "",
 		Path:      "",
 		Connected: connected,
+		QueuePos:  0,
 	}
 	s.connsMu.Lock()
 	s.conns[info.Index] = info
@@ -175,6 +177,8 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 
 	if !status.Ok {
 		current := status.Index + 1
+		info.QueuePos = current
+		s.updateConnection(info)
 		if _, err := fmt.Fprintf(conn, "%d\n", current); err != nil {
 			return
 		}
@@ -187,9 +191,13 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 			select {
 			case next := <-h.C:
 				if next.Ok {
+					info.QueuePos = 0
+					s.updateConnection(info)
 					break queuing
 				}
 				current = next.Index + 1
+				info.QueuePos = current
+				s.updateConnection(info)
 			case <-ticker.C:
 				if _, err := fmt.Fprintf(conn, "%d\n", current); err != nil {
 					return
@@ -199,6 +207,9 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 			}
 		}
 	}
+
+	info.QueuePos = 0
+	s.updateConnection(info)
 
 	if _, err := fmt.Fprintf(conn, "%d\n", 0); err != nil {
 		return
@@ -318,17 +329,23 @@ func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
 		tablewriter.WithHeaderAutoFormat(tw.Off),
 		tablewriter.WithAlignment(tw.Alignment{
 			tw.AlignRight,   // Index
-			tw.AlignRight,   // RemoteAddr
+			tw.AlignDefault, // Remote
 			tw.AlignDefault, // Path
+			tw.AlignDefault, // Status
 			tw.AlignDefault, // Connected
 		}),
 	)
-	table.Header("Index", "Remote", "Path", "Connected")
+	table.Header("Index", "Remote", "Path", "Status", "Connected")
 	for _, info := range infos {
+		status := "Active"
+		if info.QueuePos > 0 {
+			status = fmt.Sprintf("Queued (%d)", info.QueuePos)
+		}
 		table.Append([]string{
 			strconv.FormatUint(info.Index, 10),
 			info.Remote,
-			info.Path,
+			strings.TrimSuffix(info.Path, "/git-upload-pack"),
+			status,
 			info.Connected.Format(time.DateTime),
 		})
 	}
