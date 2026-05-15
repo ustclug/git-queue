@@ -1,0 +1,57 @@
+version: 2
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: git-queue
+    binary: git-queue
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/ustclug/git-queue/pkg/info.Version={{.Version}} -X github.com/ustclug/git-queue/pkg/info.BuildDate={{.Date}} -X github.com/ustclug/git-queue/pkg/info.GitCommit={{.Commit}}
+archives:
+  - formats: binary
+    name_template: "{{ .Binary }}_{{ .Os  }}_{{ .Arch }}"
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+changelog:
+  use: github-native
+nfpms:
+  - id: default
+    package_name: git-queue
+    homepage: https://github.com/ustclug/git-queue
+    maintainer: "USTC LUG <lug@ustc.edu.cn>"
+    description: |-
+      A queue manager for git
+    formats:
+      - deb
+    umask: 0o022
+    dependencies:
+      - bash
+    section: admin
+    priority: extra
+    provides:
+      - git-queue
+    scripts:
+      postinstall: assets/postinst.sh
+      preremove: assets/prerm.sh
+      postremove: assets/postrm.sh
+    contents:
+      - src: ./assets/wrapper.sh
+        dst: /usr/lib/git-queue/wrapper.sh
+      - src: ./assets/git-queue.service
+        dst: /lib/systemd/system/
+      - src: ./assets/gitconfig
+        dst: /etc/gitconfig.queue
+
+# modelines, feel free to remove those if you don't want/use them:
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
