@@ -25,6 +25,8 @@ import (
 	"github.com/ustclug/git-queue/pkg/queue"
 )
 
+const UnknownFallback = "<unknown>"
+
 type Config struct {
 	listenAddr  string
 	adminSocket string
@@ -146,7 +148,7 @@ func formatTelegrafLine(host string, active, queued int, timestamp time.Time) st
 func (s *Server) telegrafMetrics() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
-		host = "<unknown>"
+		host = UnknownFallback
 	}
 	active, queued := s.connectionCounts()
 	return formatTelegrafLine(host, active, queued, time.Now())
@@ -159,7 +161,7 @@ func remoteParts(attrs map[string]string, fallback net.Addr) (string, string) {
 		return host, port
 	}
 	if fallback == nil {
-		return "<unknown>", ""
+		return UnknownFallback, ""
 	}
 	fallbackHost, fallbackPort, err := net.SplitHostPort(fallback.String())
 	if err == nil {
@@ -171,7 +173,7 @@ func remoteParts(attrs map[string]string, fallback net.Addr) (string, string) {
 func assembleRemote(addr, port string) string {
 	if port == "" {
 		if addr == "" {
-			return "<unknown>"
+			return UnknownFallback
 		}
 		return addr
 	}
