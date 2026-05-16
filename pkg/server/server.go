@@ -361,7 +361,7 @@ func QueryConnections(config Config) ([]ConnectionInfo, error) {
 	return infos, nil
 }
 
-func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
+func PrintConnections(w io.Writer, infos []ConnectionInfo, withPort bool) error {
 	table := tablewriter.NewTable(
 		w,
 		tablewriter.WithRendition(tw.Rendition{
@@ -386,13 +386,21 @@ func PrintConnections(w io.Writer, infos []ConnectionInfo) error {
 	)
 	table.Header("Index", "Remote", "Path", "Status", "Connected")
 	for _, info := range infos {
+		remote := info.RemoteAddr
+		if remote == "" {
+			remote = UnknownFallback
+		}
+		if withPort {
+			remote = assembleRemote(info.RemoteAddr, info.RemotePort)
+		}
+
 		status := "Active"
 		if info.QueuePos > 0 {
 			status = fmt.Sprintf("Queued (%d)", info.QueuePos)
 		}
 		if err := table.Append([]string{
 			strconv.FormatUint(info.Index, 10),
-			assembleRemote(info.RemoteAddr, info.RemotePort),
+			remote,
 			strings.TrimSuffix(info.Path, "/git-upload-pack"),
 			status,
 			info.Connected.Format(time.DateTime),

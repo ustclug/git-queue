@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,4 +28,35 @@ func TestConnectionCounts(t *testing.T) {
 func TestFormatTelegrafLine(t *testing.T) {
 	line := formatTelegrafLine("host name,prod=1", 10, 15, time.Unix(0, 1778837100123456789))
 	assert.Equal(t, "git-queue,host=host\\ name\\,prod\\=1 active=10i,queued=15i 1778837100123456789\n", line)
+}
+
+func TestPrintConnections_DefaultRemoteWithoutPort(t *testing.T) {
+	var b bytes.Buffer
+	err := PrintConnections(&b, []ConnectionInfo{{
+		Index:      1,
+		RemoteAddr: "192.0.2.12",
+		RemotePort: "443",
+		Path:       "/repo.git/git-upload-pack",
+		Connected:  time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC),
+	}}, false)
+	require.NoError(t, err)
+
+	out := b.String()
+	assert.Contains(t, out, "192.0.2.12")
+	assert.NotContains(t, out, "192.0.2.12:443")
+}
+
+func TestPrintConnections_WithPort(t *testing.T) {
+	var b bytes.Buffer
+	err := PrintConnections(&b, []ConnectionInfo{{
+		Index:      1,
+		RemoteAddr: "192.0.2.12",
+		RemotePort: "443",
+		Path:       "/repo.git/git-upload-pack",
+		Connected:  time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC),
+	}}, true)
+	require.NoError(t, err)
+
+	out := b.String()
+	assert.True(t, strings.Contains(out, "192.0.2.12:443") || strings.Contains(out, "[192.0.2.12]:443"))
 }

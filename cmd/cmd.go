@@ -30,18 +30,21 @@ func ServerCmd() *cobra.Command {
 
 func ConnectionsCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "connections",
-		Short: "Show active connections",
-		Args:  cobra.NoArgs,
+		Use:     "connections",
+		Aliases: []string{"conn", "conns"},
+		Short:   "Show active connections",
+		Args:    cobra.NoArgs,
 	}
+	var withPort bool
 	config := server.DefaultConfig()
 	config.InstallAdminFlags(c.Flags())
+	c.Flags().BoolVarP(&withPort, "port", "p", false, "Show remote port in output")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		infos, err := server.QueryConnections(config)
 		if err != nil {
 			return fmt.Errorf("query connections: %w", err)
 		}
-		return server.PrintConnections(os.Stdout, infos)
+		return server.PrintConnections(os.Stdout, infos, withPort)
 	}
 	return c
 }
