@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/git-queue server --max-active 16
+ExecStart=/usr/bin/git-queue server
 WorkingDirectory=/run/git-queue
 RuntimeDirectory=git-queue
 

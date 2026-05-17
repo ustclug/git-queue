@@ -49,6 +49,8 @@ nfpms:
         dst: /usr/lib/git-queue/wrapper.sh
       - src: ./assets/git-queue.service
         dst: /lib/systemd/system/
+      - src: ./assets/config.toml
+        dst: /etc/git-queue/config.toml
       - src: ./assets/gitconfig
         dst: /etc/gitconfig.queue
 

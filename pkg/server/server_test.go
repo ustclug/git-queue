@@ -2,13 +2,25 @@ package server
 
 import (
 	"bytes"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func writeTestConfig(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
 
 func TestConnectionCounts(t *testing.T) {
 	s := &Server{
@@ -74,4 +86,88 @@ func TestShouldQueuePath(t *testing.T) {
 func TestShouldQueuePathWithoutPrefixesQueuesAll(t *testing.T) {
 	s := NewServer(DefaultConfig())
 	assert.True(t, s.shouldQueuePath("/other/repo.git/git-upload-pack"))
+}
+
+func TestDefaultConfigQueuesAllByDefault(t *testing.T) {
+	config := DefaultConfig()
+	require.Equal(t, []string{"/"}, config.queueRepos)
+	assert.True(t, NewServer(config).shouldQueuePath("/any/repo.git/git-upload-pack"))
+}
+
+func TestLoadFile(t *testing.T) {
+	path := writeTestConfig(t, strings.Join([]string{
+		"listen = \"0.0.0.0:1234\"",
+		"socket = \"/tmp/git-queue.sock\"",
+		"max_active = 21",
+		"max_queued = 34",
+		"queue_repo_prefix = [\"/team/\", \"/ops/\"]",
+	}, "\n"))
+
+	config := DefaultConfig()
+	require.NoError(t, config.LoadFile(path))
+
+	assert.Equal(t, "0.0.0.0:1234", config.listenAddr)
+	assert.Equal(t, "/tmp/git-queue.sock", config.adminSocket)
+	assert.Equal(t, 21, config.maxActive)
+	assert.Equal(t, 34, config.maxQueued)
+	assert.Equal(t, []string{"/team/", "/ops/"}, config.queueRepos)
+}
+
+func TestLoadOptionalConfigMissingLogsAndKeepsDefaults(t *testing.T) {
+	config := DefaultConfig()
+	path := filepath.Join(t.TempDir(), "missing.toml")
+
+	var b bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&b)
+	t.Cleanup(func() {
+		log.SetOutput(oldWriter)
+	})
+
+	require.NoError(t, LoadOptionalConfig(path, &config))
+	assert.Contains(t, b.String(), "using defaults and flags")
+	assert.Equal(t, DefaultConfig(), config)
+}
+
+func TestApplyServerFlagOverrides(t *testing.T) {
+	config := DefaultConfig()
+	path := writeTestConfig(t, strings.Join([]string{
+		"listen = \"0.0.0.0:1234\"",
+		"socket = \"/tmp/from-file.sock\"",
+		"max_active = 21",
+		"max_queued = 34",
+		"queue_repo_prefix = [\"/team/\"]",
+	}, "\n"))
+	require.NoError(t, config.LoadFile(path))
+
+	flagConfig := DefaultConfig()
+	flags := pflag.NewFlagSet("server", pflag.ContinueOnError)
+	flagConfig.InstallFlags(flags)
+	require.NoError(t, flags.Parse([]string{
+		"--listen=127.0.0.1:9999",
+		"--max-active=7",
+		"--queue-repo-prefix=/cli/",
+	}))
+
+	config.ApplyServerFlagOverrides(flagConfig, flags)
+
+	assert.Equal(t, "127.0.0.1:9999", config.listenAddr)
+	assert.Equal(t, "/tmp/from-file.sock", config.adminSocket)
+	assert.Equal(t, 7, config.maxActive)
+	assert.Equal(t, 34, config.maxQueued)
+	assert.Equal(t, []string{"/cli/"}, config.queueRepos)
+}
+
+func TestApplyAdminFlagOverrides(t *testing.T) {
+	config := DefaultConfig()
+	path := writeTestConfig(t, "socket = \"/tmp/from-file.sock\"\n")
+	require.NoError(t, config.LoadFile(path))
+
+	flagConfig := DefaultConfig()
+	flags := pflag.NewFlagSet("connections", pflag.ContinueOnError)
+	flagConfig.InstallAdminFlags(flags)
+	require.NoError(t, flags.Parse([]string{"--socket=/tmp/from-flag.sock"}))
+
+	config.ApplyAdminFlagOverrides(flagConfig, flags)
+	assert.Equal(t, "/tmp/from-flag.sock", config.adminSocket)
 }

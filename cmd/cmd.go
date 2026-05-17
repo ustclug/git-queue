@@ -15,9 +15,16 @@ func ServerCmd() *cobra.Command {
 		Short: "Run as server",
 		Args:  cobra.NoArgs,
 	}
-	config := server.DefaultConfig()
-	config.InstallFlags(c.Flags())
+	flagConfig := server.DefaultConfig()
+	configPath := server.DefaultConfigPath
+	server.InstallConfigFlag(c.Flags(), &configPath)
+	flagConfig.InstallFlags(c.Flags())
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		config := server.DefaultConfig()
+		if err := server.LoadOptionalConfig(configPath, &config); err != nil {
+			return err
+		}
+		config.ApplyServerFlagOverrides(flagConfig, cmd.Flags())
 		s := server.NewServer(config)
 		if err := s.Start(); err != nil {
 			return err
@@ -36,10 +43,17 @@ func ConnectionsCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 	}
 	var withPort bool
-	config := server.DefaultConfig()
-	config.InstallAdminFlags(c.Flags())
+	flagConfig := server.DefaultConfig()
+	configPath := server.DefaultConfigPath
+	server.InstallConfigFlag(c.Flags(), &configPath)
+	flagConfig.InstallAdminFlags(c.Flags())
 	c.Flags().BoolVarP(&withPort, "port", "p", false, "Show remote port in output")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		config := server.DefaultConfig()
+		if err := server.LoadOptionalConfig(configPath, &config); err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		config.ApplyAdminFlagOverrides(flagConfig, cmd.Flags())
 		infos, err := server.QueryConnections(config)
 		if err != nil {
 			return fmt.Errorf("query connections: %w", err)

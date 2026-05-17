@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/pflag"
@@ -26,6 +27,7 @@ import (
 )
 
 const UnknownFallback = "<unknown>"
+const DefaultConfigPath = "/etc/git-queue/config.toml"
 
 type Config struct {
 	listenAddr  string
@@ -41,7 +43,20 @@ func DefaultConfig() Config {
 		adminSocket: "/run/git-queue/git-queue.sock",
 		maxActive:   10,
 		maxQueued:   1000,
+		queueRepos:  []string{"/"},
 	}
+}
+
+type fileConfig struct {
+	Listen          string   `toml:"listen"`
+	Socket          string   `toml:"socket"`
+	MaxActive       int      `toml:"max_active"`
+	MaxQueued       int      `toml:"max_queued"`
+	QueueRepoPrefix []string `toml:"queue_repo_prefix"`
+}
+
+func InstallConfigFlag(flagset *pflag.FlagSet, path *string) {
+	flagset.StringVar(path, "config", DefaultConfigPath, "Path to TOML config file")
 }
 
 func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
@@ -54,6 +69,65 @@ func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
 
 func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
 	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
+}
+
+func (c *Config) LoadFile(path string) error {
+	var fc fileConfig
+	md, err := toml.DecodeFile(path, &fc)
+	if err != nil {
+		return err
+	}
+	if md.IsDefined("listen") {
+		c.listenAddr = fc.Listen
+	}
+	if md.IsDefined("socket") {
+		c.adminSocket = fc.Socket
+	}
+	if md.IsDefined("max_active") {
+		c.maxActive = fc.MaxActive
+	}
+	if md.IsDefined("max_queued") {
+		c.maxQueued = fc.MaxQueued
+	}
+	if md.IsDefined("queue_repo_prefix") {
+		c.queueRepos = fc.QueueRepoPrefix
+	}
+	return nil
+}
+
+func (c *Config) ApplyServerFlagOverrides(overrides Config, flagset *pflag.FlagSet) {
+	if flagset.Changed("listen") {
+		c.listenAddr = overrides.listenAddr
+	}
+	if flagset.Changed("socket") {
+		c.adminSocket = overrides.adminSocket
+	}
+	if flagset.Changed("max-active") {
+		c.maxActive = overrides.maxActive
+	}
+	if flagset.Changed("max-queued") {
+		c.maxQueued = overrides.maxQueued
+	}
+	if flagset.Changed("queue-repo-prefix") {
+		c.queueRepos = overrides.queueRepos
+	}
+}
+
+func (c *Config) ApplyAdminFlagOverrides(overrides Config, flagset *pflag.FlagSet) {
+	if flagset.Changed("socket") {
+		c.adminSocket = overrides.adminSocket
+	}
+}
+
+func LoadOptionalConfig(path string, config *Config) error {
+	if err := config.LoadFile(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("Config file %q not found, using defaults and flags", path)
+			return nil
+		}
+		return fmt.Errorf("load config %q: %w", path, err)
+	}
+	return nil
 }
 
 type ConnectionInfo struct {

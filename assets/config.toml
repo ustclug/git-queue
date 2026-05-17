@@ -1,0 +1,5 @@
+listen = "127.0.0.1:9419"
+socket = "/run/git-queue/git-queue.sock"
+max_active = 16
+max_queued = 1000
+queue_repo_prefix = ["/"]
