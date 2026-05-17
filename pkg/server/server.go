@@ -267,11 +267,12 @@ func accessLogRemote(info ConnectionInfo) string {
 }
 
 func formatAccessLog(info ConnectionInfo, event string, kv ...string) string {
-	parts := []string{
+	parts := make([]string, 0, 3+len(kv))
+	parts = append(parts,
 		fmt.Sprintf("remote=%q", accessLogRemote(info)),
 		fmt.Sprintf("path=%q", info.Path),
-		"event=" + event,
-	}
+		"event="+event,
+	)
 	parts = append(parts, kv...)
 	return strings.Join(parts, " ")
 }
