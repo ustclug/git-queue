@@ -1,0 +1,9 @@
+/var/log/git-queue/access.log {
+	daily
+	rotate 14
+	missingok
+	notifempty
+	compress
+	delaycompress
+	create 0640 git-queue adm
+}

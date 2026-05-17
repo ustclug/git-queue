@@ -28,6 +28,7 @@ import (
 
 const UnknownFallback = "<unknown>"
 const DefaultConfigPath = "/etc/git-queue/config.toml"
+const DefaultAccessLogPath = "/var/log/git-queue/access.log"
 
 type Config struct {
 	listenAddr  string
@@ -144,6 +145,8 @@ type Server struct {
 
 	l      net.Listener
 	adminL net.Listener
+	access *os.File
+	logger *log.Logger
 	q      *queue.Queue
 
 	nextConnIndex atomic.Uint64
@@ -259,6 +262,31 @@ func assembleRemote(addr, port string) string {
 	return net.JoinHostPort(addr, port)
 }
 
+func accessLogRemote(info ConnectionInfo) string {
+	return assembleRemote(info.RemoteAddr, info.RemotePort)
+}
+
+func formatAccessLog(info ConnectionInfo, event string, kv ...string) string {
+	parts := []string{
+		fmt.Sprintf("remote=%q", accessLogRemote(info)),
+		fmt.Sprintf("path=%q", info.Path),
+		"event=" + event,
+	}
+	parts = append(parts, kv...)
+	return strings.Join(parts, " ")
+}
+
+func formatDurationField(key string, d time.Duration) string {
+	return fmt.Sprintf("%s=%s", key, d.Round(time.Millisecond))
+}
+
+func (s *Server) logAccess(info ConnectionInfo, event string, kv ...string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Print(formatAccessLog(info, event, kv...))
+}
+
 func (s *Server) shouldQueuePath(path string) bool {
 	if len(s.config.queueRepos) == 0 {
 		return true
@@ -276,6 +304,13 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 
 	info := s.registerConnection(connected)
 	defer s.unregisterConnection(info.Index)
+
+	finalEvent := "finished"
+	finalFields := []string{formatDurationField("total_duration", time.Since(connected))}
+	defer func() {
+		finalFields[0] = formatDurationField("total_duration", time.Since(connected))
+		s.logAccess(info, finalEvent, finalFields...)
+	}()
 
 	attrs := make(map[string]string)
 	r := bufio.NewScanner(conn)
@@ -315,11 +350,14 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 
 	status := <-h.C
 	if status.Full {
+		finalEvent = "rejected"
+		finalFields = append(finalFields, "reason=queue_full")
 		fmt.Fprintf(conn, "%d\n", -1)
 		return
 	}
 
 	if !status.Ok {
+		queueStarted := time.Now()
 		current := status.Index + 1
 		info.QueuePos = current
 		s.updateConnection(info)
@@ -337,6 +375,7 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 				if next.Ok {
 					info.QueuePos = 0
 					s.updateConnection(info)
+					s.logAccess(info, "queue_done", formatDurationField("queue_duration", time.Since(queueStarted)))
 					break queuing
 				}
 				current = next.Index + 1
@@ -362,22 +401,32 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 }
 
 func (s *Server) Start() error {
+	access, err := os.OpenFile(DefaultAccessLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	if err != nil {
+		return fmt.Errorf("open access log %q: %w", DefaultAccessLogPath, err)
+	}
 	l, err := net.Listen("tcp", s.config.listenAddr)
 	if err != nil {
+		_ = access.Close()
 		return err
 	}
 	adminL, err := net.Listen("unix", s.config.adminSocket)
 	if err != nil {
+		_ = access.Close()
 		_ = l.Close()
 		return err
 	}
 	if err := os.Chmod(s.config.adminSocket, 0o660); err != nil {
+		_ = access.Close()
 		_ = l.Close()
 		_ = adminL.Close()
 		return err
 	}
 	s.l = l
 	s.adminL = adminL
+	s.access = access
+	s.logger = log.New(access, "", log.LstdFlags)
+	log.Printf("Access log: %s", DefaultAccessLogPath)
 	go s.acceptLoop()
 	go s.adminServeLoop()
 	return nil
@@ -394,6 +443,13 @@ func (s *Server) Stop() error {
 	}
 	if e := os.Remove(s.config.adminSocket); err == nil && e != nil && !errors.Is(e, os.ErrNotExist) {
 		err = e
+	}
+	if s.access != nil {
+		if e := s.access.Close(); err == nil {
+			err = e
+		}
+		s.access = nil
+		s.logger = nil
 	}
 	return err
 }

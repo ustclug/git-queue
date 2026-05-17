@@ -53,6 +53,8 @@ nfpms:
         dst: /etc/git-queue/config.toml
       - src: ./assets/gitconfig
         dst: /etc/gitconfig.queue
+      - src: ./assets/git-queue.logrotate
+        dst: /etc/logrotate.d/git-queue
 
 # modelines, feel free to remove those if you don't want/use them:
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json

@@ -16,10 +16,9 @@ if [ "$1" = "configure" ]; then
 	fi
 
 	# Add log directory with correct permissions
-	if [ ! -d /var/log/git-queue ]; then
-		mkdir -p /var/log/git-queue
-		chown -R git-queue:adm /var/log/git-queue
-	fi
+	mkdir -p /var/log/git-queue
+	chown git-queue:adm /var/log/git-queue
+	chmod 0750 /var/log/git-queue
 fi
 
 if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ] ; then
