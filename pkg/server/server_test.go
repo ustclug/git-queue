@@ -60,3 +60,18 @@ func TestPrintConnections_WithPort(t *testing.T) {
 	out := b.String()
 	assert.True(t, strings.Contains(out, "192.0.2.12:443") || strings.Contains(out, "[192.0.2.12]:443"))
 }
+
+func TestShouldQueuePath(t *testing.T) {
+	s := NewServer(Config{
+		queueRepos: []string{"/queued", "/group/"},
+	})
+
+	assert.True(t, s.shouldQueuePath("/queued-repo.git/git-upload-pack"))
+	assert.True(t, s.shouldQueuePath("/group/repo.git/git-receive-pack"))
+	assert.False(t, s.shouldQueuePath("/other/repo.git/git-upload-pack"))
+}
+
+func TestShouldQueuePathWithoutPrefixesQueuesAll(t *testing.T) {
+	s := NewServer(DefaultConfig())
+	assert.True(t, s.shouldQueuePath("/other/repo.git/git-upload-pack"))
+}

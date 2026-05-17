@@ -32,6 +32,7 @@ type Config struct {
 	adminSocket string
 	maxActive   int
 	maxQueued   int
+	queueRepos  []string
 }
 
 func DefaultConfig() Config {
@@ -48,6 +49,7 @@ func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
 	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
 	flagset.IntVar(&c.maxActive, "max-active", c.maxActive, "Maximum number of active connections")
 	flagset.IntVar(&c.maxQueued, "max-queued", c.maxQueued, "Maximum number of queued connections")
+	flagset.StringArrayVar(&c.queueRepos, "queue-repo-prefix", c.queueRepos, "Only queue repositories whose path starts with this prefix; repeatable")
 }
 
 func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
@@ -183,6 +185,18 @@ func assembleRemote(addr, port string) string {
 	return net.JoinHostPort(addr, port)
 }
 
+func (s *Server) shouldQueuePath(path string) bool {
+	if len(s.config.queueRepos) == 0 {
+		return true
+	}
+	for _, prefix := range s.config.queueRepos {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handle(conn net.Conn, connected time.Time) {
 	defer conn.Close()
 
@@ -214,6 +228,13 @@ func (s *Server) handle(conn net.Conn, connected time.Time) {
 	info.RemoteAddr, info.RemotePort = remoteParts(attrs, conn.RemoteAddr())
 	info.Path = attrs["PATH_INFO"]
 	s.updateConnection(info)
+	if !s.shouldQueuePath(info.Path) {
+		if _, err := fmt.Fprintf(conn, "%d\n", 0); err != nil {
+			return
+		}
+		<-chClosed
+		return
+	}
 
 	h := s.q.Acquire()
 	defer h.Release()
