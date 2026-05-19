@@ -75,7 +75,7 @@ func TestPrintConnections_WithPort(t *testing.T) {
 
 func TestShouldQueuePath(t *testing.T) {
 	s := NewServer(Config{
-		queueRepos: []string{"/queued", "/group/"},
+		QueueRepos: []string{"/queued", "/group/"},
 	})
 
 	assert.True(t, s.shouldQueuePath("/queued-repo.git/git-upload-pack"))
@@ -90,11 +90,11 @@ func TestShouldQueuePathWithoutPrefixesQueuesAll(t *testing.T) {
 
 func TestDefaultConfigQueuesAllByDefault(t *testing.T) {
 	config := DefaultConfig()
-	require.Equal(t, []string{"/"}, config.queueRepos)
+	require.Equal(t, []string{"/"}, config.QueueRepos)
 	assert.True(t, NewServer(config).shouldQueuePath("/any/repo.git/git-upload-pack"))
 }
 
-func TestLoadFile(t *testing.T) {
+func TestLoadConfigFromFile(t *testing.T) {
 	path := writeTestConfig(t, strings.Join([]string{
 		"listen = \"0.0.0.0:1234\"",
 		"socket = \"/tmp/git-queue.sock\"",
@@ -103,18 +103,17 @@ func TestLoadFile(t *testing.T) {
 		"queue_repo_prefix = [\"/team/\", \"/ops/\"]",
 	}, "\n"))
 
-	config := DefaultConfig()
-	require.NoError(t, config.LoadFile(path))
+	config, err := LoadConfig(path, nil)
+	require.NoError(t, err)
 
-	assert.Equal(t, "0.0.0.0:1234", config.listenAddr)
-	assert.Equal(t, "/tmp/git-queue.sock", config.adminSocket)
-	assert.Equal(t, 21, config.maxActive)
-	assert.Equal(t, 34, config.maxQueued)
-	assert.Equal(t, []string{"/team/", "/ops/"}, config.queueRepos)
+	assert.Equal(t, "0.0.0.0:1234", config.ListenAddr)
+	assert.Equal(t, "/tmp/git-queue.sock", config.AdminSocket)
+	assert.Equal(t, 21, config.MaxActive)
+	assert.Equal(t, 34, config.MaxQueued)
+	assert.Equal(t, []string{"/team/", "/ops/"}, config.QueueRepos)
 }
 
-func TestLoadOptionalConfigMissingLogsAndKeepsDefaults(t *testing.T) {
-	config := DefaultConfig()
+func TestLoadConfigMissingLogsAndKeepsDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.toml")
 
 	var b bytes.Buffer
@@ -124,13 +123,13 @@ func TestLoadOptionalConfigMissingLogsAndKeepsDefaults(t *testing.T) {
 		log.SetOutput(oldWriter)
 	})
 
-	require.NoError(t, LoadOptionalConfig(path, &config))
+	config, err := LoadConfig(path, nil)
+	require.NoError(t, err)
 	assert.Contains(t, b.String(), "using defaults and flags")
 	assert.Equal(t, DefaultConfig(), config)
 }
 
-func TestApplyServerFlagOverrides(t *testing.T) {
-	config := DefaultConfig()
+func TestLoadConfigFlagsOverrideFile(t *testing.T) {
 	path := writeTestConfig(t, strings.Join([]string{
 		"listen = \"0.0.0.0:1234\"",
 		"socket = \"/tmp/from-file.sock\"",
@@ -138,36 +137,34 @@ func TestApplyServerFlagOverrides(t *testing.T) {
 		"max_queued = 34",
 		"queue_repo_prefix = [\"/team/\"]",
 	}, "\n"))
-	require.NoError(t, config.LoadFile(path))
 
-	flagConfig := DefaultConfig()
 	flags := pflag.NewFlagSet("server", pflag.ContinueOnError)
-	flagConfig.InstallFlags(flags)
+	DefaultConfig().InstallFlags(flags)
 	require.NoError(t, flags.Parse([]string{
 		"--listen=127.0.0.1:9999",
 		"--max-active=7",
 		"--queue-repo-prefix=/cli/",
 	}))
 
-	config.ApplyServerFlagOverrides(flagConfig, flags)
+	config, err := LoadConfig(path, flags)
+	require.NoError(t, err)
 
-	assert.Equal(t, "127.0.0.1:9999", config.listenAddr)
-	assert.Equal(t, "/tmp/from-file.sock", config.adminSocket)
-	assert.Equal(t, 7, config.maxActive)
-	assert.Equal(t, 34, config.maxQueued)
-	assert.Equal(t, []string{"/cli/"}, config.queueRepos)
+	assert.Equal(t, "127.0.0.1:9999", config.ListenAddr)
+	assert.Equal(t, "/tmp/from-file.sock", config.AdminSocket)
+	assert.Equal(t, 7, config.MaxActive)
+	assert.Equal(t, 34, config.MaxQueued)
+	assert.Equal(t, []string{"/cli/"}, config.QueueRepos)
 }
 
-func TestApplyAdminFlagOverrides(t *testing.T) {
-	config := DefaultConfig()
+func TestLoadAdminConfigOnlyBindsSocketFlag(t *testing.T) {
 	path := writeTestConfig(t, "socket = \"/tmp/from-file.sock\"\n")
-	require.NoError(t, config.LoadFile(path))
 
-	flagConfig := DefaultConfig()
 	flags := pflag.NewFlagSet("connections", pflag.ContinueOnError)
-	flagConfig.InstallAdminFlags(flags)
+	DefaultConfig().InstallAdminFlags(flags)
 	require.NoError(t, flags.Parse([]string{"--socket=/tmp/from-flag.sock"}))
 
-	config.ApplyAdminFlagOverrides(flagConfig, flags)
-	assert.Equal(t, "/tmp/from-flag.sock", config.adminSocket)
+	config, err := LoadAdminConfig(path, flags)
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/from-flag.sock", config.AdminSocket)
+	assert.Equal(t, DefaultConfig().ListenAddr, config.ListenAddr)
 }

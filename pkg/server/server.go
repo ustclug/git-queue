@@ -18,10 +18,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 
 	"github.com/ustclug/git-queue/pkg/queue"
 )
@@ -31,104 +31,111 @@ const DefaultConfigPath = "/etc/git-queue/config.toml"
 const DefaultAccessLogPath = "/var/log/git-queue/access.log"
 
 type Config struct {
-	listenAddr  string
-	adminSocket string
-	maxActive   int
-	maxQueued   int
-	queueRepos  []string
+	ListenAddr  string   `mapstructure:"listen"`
+	AdminSocket string   `mapstructure:"socket"`
+	MaxActive   int      `mapstructure:"max_active"`
+	MaxQueued   int      `mapstructure:"max_queued"`
+	QueueRepos  []string `mapstructure:"queue_repo_prefix"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		listenAddr:  "127.0.0.1:9419",
-		adminSocket: "/run/git-queue/git-queue.sock",
-		maxActive:   10,
-		maxQueued:   1000,
-		queueRepos:  []string{"/"},
+		ListenAddr:  "127.0.0.1:9419",
+		AdminSocket: "/run/git-queue/git-queue.sock",
+		MaxActive:   10,
+		MaxQueued:   1000,
+		QueueRepos:  []string{"/"},
 	}
-}
-
-type fileConfig struct {
-	Listen          string   `toml:"listen"`
-	Socket          string   `toml:"socket"`
-	MaxActive       int      `toml:"max_active"`
-	MaxQueued       int      `toml:"max_queued"`
-	QueueRepoPrefix []string `toml:"queue_repo_prefix"`
 }
 
 func InstallConfigFlag(flagset *pflag.FlagSet, path *string) {
 	flagset.StringVar(path, "config", DefaultConfigPath, "Path to TOML config file")
 }
 
-func (c *Config) InstallFlags(flagset *pflag.FlagSet) {
-	flagset.StringVarP(&c.listenAddr, "listen", "l", c.listenAddr, "Address and port to listen on")
-	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
-	flagset.IntVar(&c.maxActive, "max-active", c.maxActive, "Maximum number of active connections")
-	flagset.IntVar(&c.maxQueued, "max-queued", c.maxQueued, "Maximum number of queued connections")
-	flagset.StringArrayVar(&c.queueRepos, "queue-repo-prefix", c.queueRepos, "Only queue repositories whose path starts with this prefix; repeatable")
+func (c Config) InstallFlags(flagset *pflag.FlagSet) {
+	flagset.StringP("listen", "l", c.ListenAddr, "Address and port to listen on")
+	flagset.String("socket", c.AdminSocket, "Unix socket path for admin HTTP server")
+	flagset.Int("max-active", c.MaxActive, "Maximum number of active connections")
+	flagset.Int("max-queued", c.MaxQueued, "Maximum number of queued connections")
+	flagset.StringArray("queue-repo-prefix", c.QueueRepos, "Only queue repositories whose path starts with this prefix; repeatable")
 }
 
-func (c *Config) InstallAdminFlags(flagset *pflag.FlagSet) {
-	flagset.StringVar(&c.adminSocket, "socket", c.adminSocket, "Unix socket path for admin HTTP server")
+func (c Config) InstallAdminFlags(flagset *pflag.FlagSet) {
+	flagset.String("socket", c.AdminSocket, "Unix socket path for admin HTTP server")
 }
 
-func (c *Config) LoadFile(path string) error {
-	var fc fileConfig
-	md, err := toml.DecodeFile(path, &fc)
-	if err != nil {
-		return err
+func (c Config) applyDefaults(v *viper.Viper) {
+	v.SetDefault("listen", c.ListenAddr)
+	v.SetDefault("socket", c.AdminSocket)
+	v.SetDefault("max_active", c.MaxActive)
+	v.SetDefault("max_queued", c.MaxQueued)
+	v.SetDefault("queue_repo_prefix", c.QueueRepos)
+}
+
+func bindConfigFlag(v *viper.Viper, flagset *pflag.FlagSet, key, name string) error {
+	flag := flagset.Lookup(name)
+	if flag == nil {
+		return nil
 	}
-	if md.IsDefined("listen") {
-		c.listenAddr = fc.Listen
-	}
-	if md.IsDefined("socket") {
-		c.adminSocket = fc.Socket
-	}
-	if md.IsDefined("max_active") {
-		c.maxActive = fc.MaxActive
-	}
-	if md.IsDefined("max_queued") {
-		c.maxQueued = fc.MaxQueued
-	}
-	if md.IsDefined("queue_repo_prefix") {
-		c.queueRepos = fc.QueueRepoPrefix
+	if err := v.BindPFlag(key, flag); err != nil {
+		return fmt.Errorf("bind flag %q: %w", name, err)
 	}
 	return nil
 }
 
-func (c *Config) ApplyServerFlagOverrides(overrides Config, flagset *pflag.FlagSet) {
-	if flagset.Changed("listen") {
-		c.listenAddr = overrides.listenAddr
+func bindConfigFlags(v *viper.Viper, flagset *pflag.FlagSet) error {
+	if flagset == nil {
+		return nil
 	}
-	if flagset.Changed("socket") {
-		c.adminSocket = overrides.adminSocket
-	}
-	if flagset.Changed("max-active") {
-		c.maxActive = overrides.maxActive
-	}
-	if flagset.Changed("max-queued") {
-		c.maxQueued = overrides.maxQueued
-	}
-	if flagset.Changed("queue-repo-prefix") {
-		c.queueRepos = overrides.queueRepos
-	}
-}
-
-func (c *Config) ApplyAdminFlagOverrides(overrides Config, flagset *pflag.FlagSet) {
-	if flagset.Changed("socket") {
-		c.adminSocket = overrides.adminSocket
-	}
-}
-
-func LoadOptionalConfig(path string, config *Config) error {
-	if err := config.LoadFile(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			log.Printf("Config file %q not found, using defaults and flags", path)
-			return nil
+	for key, name := range map[string]string{
+		"listen":            "listen",
+		"socket":            "socket",
+		"max_active":        "max-active",
+		"max_queued":        "max-queued",
+		"queue_repo_prefix": "queue-repo-prefix",
+	} {
+		if err := bindConfigFlag(v, flagset, key, name); err != nil {
+			return err
 		}
-		return fmt.Errorf("load config %q: %w", path, err)
 	}
 	return nil
+}
+
+func bindAdminConfigFlags(v *viper.Viper, flagset *pflag.FlagSet) error {
+	return bindConfigFlag(v, flagset, "socket", "socket")
+}
+
+func LoadConfig(path string, flagset *pflag.FlagSet) (Config, error) {
+	return loadConfig(path, flagset, bindConfigFlags)
+}
+
+func LoadAdminConfig(path string, flagset *pflag.FlagSet) (Config, error) {
+	return loadConfig(path, flagset, bindAdminConfigFlags)
+}
+
+func loadConfig(path string, flagset *pflag.FlagSet, bindFlags func(*viper.Viper, *pflag.FlagSet) error) (Config, error) {
+	config := DefaultConfig()
+	v := viper.New()
+	config.applyDefaults(v)
+	if err := bindFlags(v, flagset); err != nil {
+		return Config{}, err
+	}
+	if path != "" {
+		v.SetConfigFile(path)
+		v.SetConfigType("toml")
+		if err := v.ReadInConfig(); err != nil {
+			var configFileNotFound viper.ConfigFileNotFoundError
+			if errors.As(err, &configFileNotFound) || errors.Is(err, os.ErrNotExist) {
+				log.Printf("Config file %q not found, using defaults and flags", path)
+			} else {
+				return Config{}, fmt.Errorf("load config %q: %w", path, err)
+			}
+		}
+	}
+	if err := v.Unmarshal(&config); err != nil {
+		return Config{}, fmt.Errorf("decode config: %w", err)
+	}
+	return config, nil
 }
 
 type ConnectionInfo struct {
@@ -158,7 +165,7 @@ type Server struct {
 func NewServer(config Config) *Server {
 	return &Server{
 		config: config,
-		q:      queue.New(config.maxActive, config.maxQueued),
+		q:      queue.New(config.MaxActive, config.MaxQueued),
 		conns:  make(map[uint64]ConnectionInfo),
 	}
 }
@@ -289,10 +296,10 @@ func (s *Server) logAccess(info ConnectionInfo, event string, kv ...string) {
 }
 
 func (s *Server) shouldQueuePath(path string) bool {
-	if len(s.config.queueRepos) == 0 {
+	if len(s.config.QueueRepos) == 0 {
 		return true
 	}
-	for _, prefix := range s.config.queueRepos {
+	for _, prefix := range s.config.QueueRepos {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
@@ -406,18 +413,18 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("open access log %q: %w", DefaultAccessLogPath, err)
 	}
-	l, err := net.Listen("tcp", s.config.listenAddr)
+	l, err := net.Listen("tcp", s.config.ListenAddr)
 	if err != nil {
 		_ = access.Close()
 		return err
 	}
-	adminL, err := net.Listen("unix", s.config.adminSocket)
+	adminL, err := net.Listen("unix", s.config.AdminSocket)
 	if err != nil {
 		_ = access.Close()
 		_ = l.Close()
 		return err
 	}
-	if err := os.Chmod(s.config.adminSocket, 0o660); err != nil {
+	if err := os.Chmod(s.config.AdminSocket, 0o660); err != nil {
 		_ = access.Close()
 		_ = l.Close()
 		_ = adminL.Close()
@@ -442,7 +449,7 @@ func (s *Server) Stop() error {
 		}
 		s.adminL = nil
 	}
-	if e := os.Remove(s.config.adminSocket); err == nil && e != nil && !errors.Is(e, os.ErrNotExist) {
+	if e := os.Remove(s.config.AdminSocket); err == nil && e != nil && !errors.Is(e, os.ErrNotExist) {
 		err = e
 	}
 	if s.access != nil {
@@ -490,7 +497,7 @@ func QueryConnections(config Config) ([]ConnectionInfo, error) {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "unix", config.adminSocket)
+			return d.DialContext(ctx, "unix", config.AdminSocket)
 		},
 	}
 	client := &http.Client{Transport: transport}
